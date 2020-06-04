@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: jenkins-lab
+objects:
+  - apiVersion: build.openshift.io/v1
+    kind: BuildConfig
+    metadata:
+      labels:
+        app: ${APP_NAME}
+      name: ${APP_NAME}
+      namespace: ${APP_NAMESPACE}
+    spec:
+      failedBuildsHistoryLimit: 5
+      output:
+        to:
+          kind: ImageStreamTag
+          name: ${BUILD_IMG}
+      runPolicy: Serial
+      source:
+        git:
+          uri: ${GIT_URL}
+        type: Git
+      strategy:
+        sourceStrategy:
+          from:
+            kind: ImageStreamTag
+            name: wildfly:8.1
+            namespace: openshift
+        type: Source
+      successfulBuildsHistoryLimit: 5
+      triggers:
+      - type: ConfigChange
+      - imageChange:
+          type: ImageChange
+
+  - apiVersion: apps.openshift.io/v1
+    kind: DeploymentConfig
+    metadata:
+      namespace: ${APP_NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+      name: ${APP_NAME}
+    spec:
+      replicas: 0
+      selector:
+        app: ${APP_NAME}
+        deploymentconfig: ${APP_NAME}
+      strategy:
+        type: Rolling
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            deploymentconfig: ${APP_NAME}
+        spec:
+          containers:
+          - image: ${APP_IMAGE}
+            imagePullPolicy: Always
+            name: ${APP_NAME}
+            ports:
+            - containerPort: 8080
+              protocol: TCP
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          securityContext: {}
+      triggers:
+        - type: ConfigChange
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      namespace: ${APP_NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+      name: ${APP_NAME}
+    spec:
+      ports:
+      - name: 8080-tcp
+        port: 8080
+        protocol: TCP
+        targetPort: 8080
+      selector:
+        app: ${APP_NAME}
+        deploymentconfig: ${APP_NAME}
+      sessionAffinity: None
+      type: ClusterIP
+
+  - apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      namespace: ${APP_NAMESPACE}
+      labels:
+        app: ${APP_NAME}
+      name: ${APP_NAME}
+    spec:
+      host: ${APP_URL}
+      port:
+        targetPort: 8080-tcp
+      to:
+        kind: Service
+        name: ${APP_NAME}
+        weight: 100
+      wildcardPolicy: None
+      
+
+      
+parameters:
+  - name: BUILD_IMG
+    value: "eap-example:latest"
+  - name: APP_IMAGE
+    required: true
+    value: "image-registry.openshift-imge-registry.svc:5000/eap-example:latest"
+  - name: APP_URL
+    required: true
+  - name: APP_NAME
+    required: false
+    value: "eap-example"
+  - name: APP_NAMESPACE
+    required: false
+    value: "ci-cd"
+  - name: GIT_URL
+    required: false
+    value: "https://github.com/dperez-atsistemas/ocp4-jenkins-example-app.git"
+    

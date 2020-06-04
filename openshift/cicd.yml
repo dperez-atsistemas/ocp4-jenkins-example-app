@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: jenkins-lab
+objects:
+  - apiVersion: build.openshift.io/v1
+    kind: BuildConfig
+    metadata:
+      name: ${DEV_NAMESPACE}
+      namespace: ${CICD_NAMESPACE}
+    spec:
+      failedBuildsHistoryLimit: 5
+      strategy:
+        jenkinsPipelineStrategy:
+          jenkinsfile: |-
+            try {
+                timeout(time: 20, unit: 'MINUTES') {
+                    node("maven") {
+                      stage("Checkout") {
+                        git url: '${GIT_URL}', branch: "master"
+                      }
+                      stage ('Build image') {
+                          sh '''
+                            mvn package
+                            cp target/*.war target/ROOT.war
+                            oc start-build ${DEV_NAMESPACE} --from-file=target/ROOT.war -n ${DEV_NAMESPACE} --follow
+                          '''
+                          }
+                    }
+                    node {
+                      
+                      stage('Deploy to dev') {
+                        openshift.withCluster() {
+                          openshift.withProject('${DEV_NAMESPACE}') {
+                            def dc = openshift.selector("dc", '${DEV_NAMESPACE}')
+                            dc.rollout().latest()
+                            timeout(10) {
+                                dc.rollout().status()
+                              }
+                            }
+                        }                  
+                      }
+                      stage('Promote') {
+                        timeout(time:15, unit:'MINUTES') {
+                              input message: "Approve Promotion to Prod?", ok: "Promote"
+                            }
+                          }
+                    stage('Deploy to prod') {
+                      openshift.withCluster() {
+                        openshift.withProject('${PROD_NAMESPACE}') {
+                              openshift.tag('${IMG_DEV}', '${IMG_PROD}')
+                              def dc = openshift.selector("dc", '${PROD_NAMESPACE}')
+                              timeout(10) {
+                                dc.rollout().status()
+                            }
+                          }
+                        }                  
+                      }      
+                    }
+                }
+            } catch (err) {
+                echo "in catch block"
+                echo "Caught: ${err}"
+                currentBuild.result = 'FAILURE'
+                throw err
+              }
+        type: JenkinsPipeline
+      successfulBuildsHistoryLimit: 5
+      triggers:
+        - generic:
+            secret: ${WEBHOOK}
+          type: Generic
+
+  - apiVersion: image.openshift.io/v1
+    kind: ImageStream
+    metadata:
+      name: ${IMG}
+      namespace: ${DEV_NAMESPACE}
+    spec:
+      lookupPolicy:
+      local: false
+
+parameters:
+  - name: WEBHOOK
+    required: true
+  - name: IMG_PROD
+    required: true
+  - name: IMG_DEV
+    required: true
+  - name: IMG
+    required: false
+    value: "java-app"
+  - name: CICD_NAMESPACE
+    required: false
+    value: "ci-cd"
+  - name: DEV_NAMESPACE
+    required: true
+  - name: PROD_NAMESPACE
+    required: true
+  - name: GIT_URL
+    required: false
+    value: "http://gogs-op.io/gogs/openshift-jee-sample.git"
