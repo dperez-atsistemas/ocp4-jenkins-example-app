@@ -1,7 +1,14 @@
 pipeline {
-    agent any
+    agent {
+    node {label 'maven'}   
+}
 
     stages {
+        stage('Get Latest Code') {
+            steps {
+                git branch: "master", url: "https://github.com/dperez-atsistemas/ocp4-jenkins-example-app.git"
+            }
+        }
         stage ('Build image') {
             steps {
                 sh '''
@@ -41,3 +48,4 @@ pipeline {
 
     }
 }
+        
