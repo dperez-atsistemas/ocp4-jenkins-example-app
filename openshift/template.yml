@@ -1,125 +1,198 @@
-apiVersion: v1
+apiVersion: template.openshift.io/v1
 kind: Template
+labels:
+  template: eap-cd-basic-s2i
+  xpaas: "17.0"
+message: A new JBoss EAP CD based application has been created in your project.
 metadata:
-  name: jenkins-lab
+  name: eap-cd-basic-s2i
+  namespace: openshift
 objects:
-  - apiVersion: build.openshift.io/v1
-    kind: BuildConfig
-    metadata:
-      labels:
-        app: ${APP_NAME}
-      name: ${APP_NAME}
-      namespace: ${APP_NAMESPACE}
-    spec:
-      failedBuildsHistoryLimit: 5
-      output:
-        to:
-          kind: ImageStreamTag
-          name: ${BUILD_IMG}
-      runPolicy: Serial
-      source:
-        git:
-          uri: ${GIT_URL}
-        type: Git
-      strategy:
-        sourceStrategy:
-          from:
-            kind: ImageStreamTag
-            name: wildfly:8.1
-            namespace: openshift
-        type: Source
-      successfulBuildsHistoryLimit: 5
-      triggers:
-      - type: ConfigChange
-      - imageChange:
-          type: ImageChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The web server's http port.
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    ports:
+    - port: 8080
+      targetPort: 8080
+    selector:
+      deploymentConfig: ${APPLICATION_NAME}
 
-  - apiVersion: apps.openshift.io/v1
-    kind: DeploymentConfig
-    metadata:
-      namespace: ${APP_NAMESPACE}
-      labels:
-        app: ${APP_NAME}
-      name: ${APP_NAME}
-    spec:
-      replicas: 0
-      selector:
-        app: ${APP_NAME}
-        deploymentconfig: ${APP_NAME}
-      strategy:
-        type: Rolling
-      template:
-        metadata:
-          labels:
-            app: ${APP_NAME}
-            deploymentconfig: ${APP_NAME}
-        spec:
-          containers:
-          - image: ${APP_IMAGE}
-            imagePullPolicy: Always
-            name: ${APP_NAME}
-            ports:
-            - containerPort: 8080
-              protocol: TCP
-          dnsPolicy: ClusterFirst
-          restartPolicy: Always
-          securityContext: {}
-      triggers:
-        - type: ConfigChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The JGroups ping port for clustering.
+      service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-ping
+  spec:
+    clusterIP: None
+    ports:
+    - name: ping
+      port: 8888
+    publishNotReadyAddresses: true
+    selector:
+      deploymentConfig: ${APPLICATION_NAME}
 
-  - apiVersion: v1
-    kind: Service
-    metadata:
-      namespace: ${APP_NAMESPACE}
-      labels:
-        app: ${APP_NAME}
-      name: ${APP_NAME}
-    spec:
-      ports:
-      - name: 8080-tcp
-        port: 8080
-        protocol: TCP
-        targetPort: 8080
-      selector:
-        app: ${APP_NAME}
-        deploymentconfig: ${APP_NAME}
-      sessionAffinity: None
-      type: ClusterIP
+- apiVersion: v1
+  id: ${APPLICATION_NAME}-https
+  kind: Route
+  metadata:
+    annotations:
+      description: Route for application's https service.
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    tls:
+      insecureEdgeTerminationPolicy: Redirect
+      termination: edge
+    to:
+      name: ${APPLICATION_NAME}
 
-  - apiVersion: route.openshift.io/v1
-    kind: Route
-    metadata:
-      namespace: ${APP_NAMESPACE}
-      labels:
-        app: ${APP_NAME}
-      name: ${APP_NAME}
-    spec:
-      host: ${APP_URL}
-      port:
-        targetPort: 8080-tcp
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    output:
       to:
-        kind: Service
-        name: ${APP_NAME}
-        weight: 100
-      wildcardPolicy: None
-      
+        kind: ImageStreamTag
+        name: ${APPLICATION_NAME}:latest
+    source:
+      git:
+        ref: ${SOURCE_REPOSITORY_REF}
+        uri: ${SOURCE_REPOSITORY_URL}
+      type: Git
+    strategy:
+      sourceStrategy:
+        env:
+        - name: MAVEN_ARGS_APPEND
+          value: ${MAVEN_ARGS_APPEND}
+        forcePull: true
+        from:
+          kind: ImageStreamTag
+          name: eap-cd-openshift:17
+          namespace: ${IMAGE_STREAM_NAMESPACE}
+        incremental: true
+      type: Source
 
-      
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      application: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    replicas: 1
+    selector:
+      deploymentConfig: ${APPLICATION_NAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          application: ${APPLICATION_NAME}
+          deploymentConfig: ${APPLICATION_NAME}
+        name: ${APPLICATION_NAME}
+      spec:
+        containers:
+        - env:
+          - name: JGROUPS_PING_PROTOCOL
+            value: dns.DNS_PING
+          - name: OPENSHIFT_DNS_PING_SERVICE_NAME
+            value: ${APPLICATION_NAME}-ping
+          - name: OPENSHIFT_DNS_PING_SERVICE_PORT
+            value: "8888"
+          - name: MQ_CLUSTER_PASSWORD
+            value: ${MQ_CLUSTER_PASSWORD}
+          - name: JGROUPS_CLUSTER_PASSWORD
+            value: ${JGROUPS_CLUSTER_PASSWORD}
+          - name: AUTO_DEPLOY_EXPLODED
+            value: ${AUTO_DEPLOY_EXPLODED}
+          image: image-registry.openshift-image-registry.svc:5000/ci-cd/${APPLICATION_NAME}
+          imagePullPolicy: Always
+          livenessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/eap/bin/livenessProbe.sh
+            initialDelaySeconds: 60
+          name: ${APPLICATION_NAME}
+          ports:
+          - containerPort: 8778
+            name: jolokia
+            protocol: TCP
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          - containerPort: 8888
+            name: ping
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/eap/bin/readinessProbe.sh
+            initialDelaySeconds: 10
+          resources:
+            limits:
+              memory: ${MEMORY_LIMIT}
+        terminationGracePeriodSeconds: 75
+
 parameters:
-  - name: BUILD_IMG
-    value: "eap-example:latest"
-  - name: APP_IMAGE
-    required: true
-    value: "image-registry.openshift-imge-registry.svc:5000/eap-example:latest"
-  - name: APP_URL
-    required: true
-  - name: APP_NAME
-    required: false
-    value: "eap-example"
-  - name: APP_NAMESPACE
-    required: false
-    value: "ci-cd"
-  - name: GIT_URL
-    required: false
-    value: "https://github.com/dperez-atsistemas/ocp4-jenkins-example-app.git"
-    
+- displayName: Git Repository URL
+  name: SOURCE_REPOSITORY_URL
+  required: true
+  value: https://github.com/dperez-atsistemas/ocp4-jenkins-example-app.git
+- displayName: Git Reference
+  name: SOURCE_REPOSITORY_REF
+  value: master
+- displayName: Application Name
+  name: APPLICATION_NAME
+  required: true
+  value: eap-app
+- description: Maven additional arguments to use for S2I builds
+  displayName: Maven Additional Arguments
+  name: MAVEN_ARGS_APPEND
+  value: -Dcom.redhat.xpaas.repo.jbossorg
+- displayName: ImageStream Namespace
+  name: IMAGE_STREAM_NAMESPACE
+  required: true
+  value: openshift
+- name: MEMORY_LIMIT
+  value: 0.5Gi
+- description: Controls whether exploded deployment content should be automatically
+    deployed
+  displayName: Deploy Exploded Archives
+  name: AUTO_DEPLOY_EXPLODED
+  value: "false"
+- description: JGroups cluster password
+  displayName: JGroups Cluster Password
+  from: '[a-zA-Z0-9]{8}'
+  generate: expression
+  name: JGROUPS_CLUSTER_PASSWORD
+  required: true
+- displayName: AMQ cluster password
+  from: '[a-zA-Z0-9]{8}'
+  generate: expression
+  name: MQ_CLUSTER_PASSWORD
+  required: true
